@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visionneuse de parcours GPS</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#1f2937">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  html,body{height:100%;margin:0;font-family:system-ui,sans-serif}
+  #bar{padding:10px 14px;background:#1f2937;color:#fff;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  #map{height:calc(100% - 52px)}
+  #info{opacity:.8;font-size:.9rem}
+  input[type=file]{color:#fff}
+  #map.drag{outline:4px dashed #2563eb;outline-offset:-4px}
+</style>
+</head>
+<body>
+<div id="bar">
+  <b>🗺 Visionneuse de parcours</b>
+  <input type="file" id="f" accept=".gpx,application/gpx+xml,text/xml">
+  <span id="info">Ouvrez (ou glissez-déposez) un fichier .gpx, puis cliquez sur le tracé.</span>
+</div>
+<div id="map"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const map = L.map('map').setView([46.6, 2.5], 6);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, attribution: '© OpenStreetMap'
+}).addTo(map);
+
+let layer = null;
+
+function parseGPX(text){
+  const xml = new DOMParser().parseFromString(text, 'application/xml');
+  return [...xml.getElementsByTagName('trkpt')].map(e => {
+    const ele = e.getElementsByTagName('ele')[0], time = e.getElementsByTagName('time')[0];
+    return {
+      lat: +e.getAttribute('lat'), lon: +e.getAttribute('lon'),
+      ele: ele ? +ele.textContent : null,
+      t: time ? new Date(time.textContent) : null
+    };
+  });
+}
+
+function popupHTML(p, i, n){
+  const d = p.t ? p.t.toLocaleDateString('fr-FR', {dateStyle: 'full'}) : 'n/d';
+  const h = p.t ? p.t.toLocaleTimeString('fr-FR') : 'n/d';
+  return `<b>📅 ${d}</b><br>🕒 ${h}<br>
+    📍 Lat : ${p.lat.toFixed(6)}<br>📍 Lon : ${p.lon.toFixed(6)}<br>
+    ${p.ele != null ? '⛰ Altitude : ' + Math.round(p.ele) + ' m<br>' : ''}
+    <small>Point ${i + 1} / ${n}</small><br>
+    <a href="https://www.google.com/maps?q=${p.lat},${p.lon}" target="_blank" rel="noopener">Ouvrir dans Google Maps</a>`;
+}
+
+function show(text){
+  const pts = parseGPX(text);
+  if (!pts.length) return alert('Aucun point de parcours trouvé dans ce fichier.');
+  if (layer) layer.remove();
+  layer = L.layerGroup().addTo(map);
+
+  const latlngs = pts.map(p => [p.lat, p.lon]);
+  const line = L.polyline(latlngs, { color: '#d33', weight: 5, opacity: .85 }).addTo(layer);
+
+  // clic sur le tracé -> point enregistré le plus proche
+  line.on('click', e => {
+    let best = 0, bd = Infinity;
+    pts.forEach((p, i) => {
+      const d = map.distance(e.latlng, [p.lat, p.lon]);
+      if (d < bd) { bd = d; best = i; }
+    });
+    L.popup().setLatLng([pts[best].lat, pts[best].lon])
+      .setContent(popupHTML(pts[best], best, pts.length)).openOn(map);
+  });
+
+  // départ (vert) et arrivée (noir) cliquables aussi
+  [[0, '#1a9c4b'], [pts.length - 1, '#111']].forEach(([i, color]) => {
+    L.circleMarker([pts[i].lat, pts[i].lon], { radius: 8, color, fillColor: color, fillOpacity: 1 })
+      .bindPopup(popupHTML(pts[i], i, pts.length)).addTo(layer);
+  });
+
+  map.fitBounds(line.getBounds(), { padding: [30, 30] });
+  const a = pts[0].t, b = pts[pts.length - 1].t;
+  document.getElementById('info').textContent =
+    `${pts.length} points` + (a && b ? ` – du ${a.toLocaleString('fr-FR')} au ${b.toLocaleString('fr-FR')}` : '');
+}
+
+function readFile(file){ file.text().then(show); }
+document.getElementById('f').onchange = e => e.target.files[0] && readFile(e.target.files[0]);
+
+// Service worker : installation + démarrage hors connexion
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+
+// Ouverture directe d'un .gpx par double-clic une fois l'application installée (Chrome / Edge)
+if ('launchQueue' in window) {
+  launchQueue.setConsumer(async params => {
+    if (!params.files || !params.files.length) return;
+    const file = await params.files[0].getFile();
+    show(await file.text());
+  });
+}
+
+const mapEl = document.getElementById('map');
+mapEl.addEventListener('dragover', e => { e.preventDefault(); mapEl.classList.add('drag'); });
+mapEl.addEventListener('dragleave', () => mapEl.classList.remove('drag'));
+mapEl.addEventListener('drop', e => {
+  e.preventDefault(); mapEl.classList.remove('drag');
+  if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]);
+});
+</script>
+</body>
+</html>
